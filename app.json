@@ -2,7 +2,7 @@
     "name": "LOT Gaming Server Monitor",
     "description": "Monitor your game servers on Discord",
     "repository": "https://github.com/TandelK/DiscordGSM/tree/lot-gaming",
-    "logo": "https://github.com/TandelK/DiscordGSM/blob/lot-gaming/images/lot_logo.png",
+    "logo": "https://github.com/TandelK/DiscordGSM/raw/lot-gaming/images/lot_logo.png",
     "keywords": ["discordgsm", "query", "gameserver", "gameservers", "monitor", "dgsm", "game-servers", "discord", "gaming", "game"],
     "env": {
         "DGSM_TOKEN": {
