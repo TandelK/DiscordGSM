@@ -76,10 +76,10 @@ is_refresh = False
 @bot.event
 async def on_ready():
     # set username and avatar
-    with open('images/discordgsm.png', 'rb') as file:
+    with open('images/lot_logo.png', 'rb') as file:
         try:
             avatar = file.read()
-            await bot.user.edit(username='DiscordGSM', avatar=avatar)
+            await bot.user.edit(username='LOT Gaming Servers', avatar=avatar)
         except:
             pass
 
@@ -222,7 +222,7 @@ def get_embed(server):
         if 'image_url' in server:
             image_url = str(server['image_url'])
         else:
-            image_url = f'https://github.com/DiscordGSM/Map-Thumbnails/raw/master/{urllib.parse.quote(data["game"])}/{urllib.parse.quote(data["map"])}.jpg'
+            image_url = f'https://lotgaming.xyz/ban/images/maps/{urllib.parse.quote(data["map"])}.jpg'
 
         embed.set_thumbnail(url=image_url)
     else:
