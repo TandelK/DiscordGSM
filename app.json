@@ -1,8 +1,8 @@
 {
-    "name": "Discord Game Server Monitor",
+    "name": "LOT Gaming Server Monitor",
     "description": "Monitor your game servers on Discord",
-    "repository": "https://github.com/DiscordGSM/DiscordGSM",
-    "logo": "https://github.com/DiscordGSM/DiscordGSM/raw/master/images/discordgsm.png",
+    "repository": "https://github.com/TandelK/DiscordGSM/tree/lot-gaming",
+    "logo": "https://github.com/TandelK/DiscordGSM/blob/lot-gaming/images/lot_logo.png",
     "keywords": ["discordgsm", "query", "gameserver", "gameservers", "monitor", "dgsm", "game-servers", "discord", "gaming", "game"],
     "env": {
         "DGSM_TOKEN": {
@@ -16,6 +16,11 @@
         },
         "SETTINGS_JSON_URL": {
             "description": "settings.json download url (You can set it later)",
+            "value": "",
+            "required": false
+        },
+        "TZ": {
+            "description": "Set Time Zone as per your requirements for Update Time",
             "value": "",
             "required": false
         }
