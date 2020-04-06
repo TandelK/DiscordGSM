@@ -85,7 +85,7 @@ async def on_ready():
     with open('images/discordgsm.png', 'rb') as file:
         try:
             avatar = file.read()
-            await bot.user.edit(username='DiscordGSM', avatar=avatar)
+            await bot.user.edit(username='Factor5 Game Server Monitor', avatar=avatar)
         except:
             pass
 
@@ -240,7 +240,7 @@ def get_embed(server):
         embed = discord.Embed(title='ERROR', description=f'{settings["fieldname"]["status"]}: :warning: **Fail to query**', color=color)
         embed.add_field(name=f'{settings["fieldname"]["port"]}', value=f'{server["addr"]}:{server["port"]}', inline=True)
     
-    embed.set_footer(text=f'DiscordGSM v{VERSION} | Monitor game server | Last update: ' + datetime.now().strftime('%a, %Y-%m-%d %I:%M:%S%p'), icon_url='https://github.com/BattlefieldDuck/DiscordGSM/raw/master/images/discordgsm.png')
+    embed.set_footer(text=f'Factor5 v{VERSION} | Monitor game server | Last update: ' + datetime.now().strftime('%a, %Y-%m-%d %I:%M:%S%p'), icon_url='https://github.com/BattlefieldDuck/DiscordGSM/raw/master/images/discordgsm.png')
     
     return embed
 
