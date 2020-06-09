@@ -4,6 +4,10 @@ import urllib
 import asyncio
 from bin import *
 
+def fire_and_forget(f):
+    def wrapped(*args, **kwargs): return asyncio.get_event_loop().run_in_executor(None, f, *args, *kwargs)
+    return wrapped
+
 # load servers.json -> get all servers type, addr, port
 class Servers:
     def __init__(self):
@@ -11,7 +15,7 @@ class Servers:
 
     # refresh query server list
     def refresh(self):
-        servers = self.load()
+        servers = self.get()
 
         # get country code from ipinfo.io
         is_edited = False
@@ -33,7 +37,7 @@ class Servers:
         self.servers = servers 
 
     # get servers data
-    def load(self):
+    def get(self):
         with open('configs/servers.json', 'r') as file:
             data = file.read()
 
@@ -46,7 +50,7 @@ class Servers:
         data['addr'], data['port'] = addr, int(port)
         data['channel'] = int(channel)
 
-        servers = self.load()
+        servers = self.get()
         servers.append(data)
 
         with open('configs/servers.json', 'w', encoding='utf8') as file:
@@ -54,7 +58,7 @@ class Servers:
 
     # delete a server by id
     def delete(self, id):
-        servers = self.load()
+        servers = self.get()
         if 0 < int(id) <= len(servers):
             del servers[int(id) - 1]
 
@@ -64,11 +68,15 @@ class Servers:
             return True
         return False
 
-    # save the servers query data to cache/
     def query(self):
-        tasks = [self.query_save_cache(server) for server in self.servers]
-        asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED, timeout=None)
-    
+        for server in self.servers:
+            try:
+                self.query_save_cache(server)
+            except:
+                pass
+        return len(self.servers)
+
+    @fire_and_forget
     def query_save_cache(self, server):
         if server['type'] == 'SourceQuery':
             query = SourceQuery(str(server['addr']), int(server['port']))
@@ -80,6 +88,7 @@ class Servers:
                 server_cache.save_data(server['game'], result['GamePort'], result['Hostname'], result['Map'], result['MaxPlayers'], result['Players'], result['Bots'], result['Password'] == 0x01)
             else:
                 server_cache.set_status('Offline')
+
         elif server['type'] == 'UT3Query':
             query = UT3Query(str(server['addr']), int(server['port']))
             result = query.getInfo()
@@ -90,6 +99,17 @@ class Servers:
                 server_cache.save_data(server['game'], result['hostport'], result['hostname'], result['map'], result['maxplayers'], result['numplayers'], 0, False)
             else:
                 server_cache.set_status('Offline')
+
+        elif server['type'] == 'GamedigQuery':
+            query = GamedigQuery(str(server['game']), str(server['addr']), int(server['port']))
+            result = query.getInfo()
+
+            server_cache = ServerCache(server['addr'], server['port'])
+            if result:
+                server_cache.save_data(server['game'], server['port'], result['Hostname'], result['Map'], result['MaxPlayers'], result['Players'], result['Bots'], result['Password'])
+            else:
+                server_cache.set_status('Offline')
+
 
 
 # Game Server Data
@@ -106,20 +126,7 @@ class ServerCache:
         except:
             return False
 
-    def get_old_status(self):
-        try:
-            with open(f'cache/{self.file_name}-old.txt', 'r', encoding='utf8') as file:
-                return file.read()
-        except:
-            return False
-
     def set_status(self, status):
-        # save old status
-        old_status = self.get_status()
-        if old_status:
-            with open(f'cache/{self.file_name}-old.txt', 'w', encoding='utf8') as file:
-                file.write(old_status)
-
         with open(f'cache/{self.file_name}.txt', 'w', encoding='utf8') as file:
             file.write(str(status))
 
@@ -130,20 +137,7 @@ class ServerCache:
         except EnvironmentError:
             return False
 
-    def get_old_data(self):
-        try:
-            with open(f'cache/{self.file_name}-old.json', 'r', encoding='utf8') as file:
-                return json.load(file)
-        except EnvironmentError:
-            return False
-
     def save_data(self, game, gameport, name, map, maxplayers, players, bots, password):
-        # save old data
-        old_data = self.get_data()
-        if old_data:
-            with open(f'cache/{self.file_name}-old.json', 'w', encoding='utf8') as file:
-                json.dump(old_data, file, ensure_ascii=False, indent=4)
-
         data = {}
 
         # save game name, ip address, query port
@@ -159,8 +153,3 @@ class ServerCache:
 
         with open(f'cache/{self.file_name}.json', 'w', encoding='utf8') as file:
             json.dump(data, file, ensure_ascii=False, indent=4)
-
-    def has_changed(self):
-        # compare old and new data, see any changes, if yes, edit the message
-        return self.get_old_data() != self.get_data() or self.get_old_status() != self.get_status()
-

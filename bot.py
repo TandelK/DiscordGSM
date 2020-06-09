@@ -1,24 +1,17 @@
 import os
-import time
-import asyncio
-import aiohttp
 import urllib
+import asyncio
 import requests
-from threading import Thread
 from datetime import datetime
 
 # discord
 import discord
-from discord.ext import commands
+from discord.ext import tasks, commands
 
 # discordgsm
 from bin import *
 from servers import Servers, ServerCache
 from settings import Settings
-
-# bot static data
-VERSION = '1.4.0'
-MIN_REFRESH_RATE = 5
 
 # download servers.json every heroku dyno start
 servers_json_url = os.getenv('SERVERS_JSON_URL')
@@ -31,328 +24,290 @@ if servers_json_url and servers_json_url.strip():
     except:
         print('Fail to download servers.json on start up')
 
-# download settings.json every heroku dyno start
-settings_json_url = os.getenv('SETTINGS_JSON_URL')
-if settings_json_url and settings_json_url.strip():
-    print('Downloading settings.json...')
-    try:
-        r = requests.get(settings_json_url)
-        with open('configs/settings.json', 'wb') as file:
-            file.write(r.content)
-    except:
-        print('Fail to download settings.json on start up')
+# env values
+VERSION = '1.7.4'
+SETTINGS = Settings.get()
+DGSM_TOKEN = os.getenv('DGSM_TOKEN', SETTINGS['token'])
+DGSM_PREFIX = os.getenv("DGSM_PREFIX", SETTINGS.get('prefix', '!'))
+ROLE_ID = os.getenv('ROLE_ID', SETTINGS.get('role_id', '123'))
+CUSTOM_IMAGE_URL = os.getenv('CUSTOM_IMAGE_URL', SETTINGS.get('image_url', ''))
+REFRESH_RATE = int(os.getenv('REFRESH_RATE', SETTINGS['refreshrate'])) if int(os.getenv('REFRESH_RATE', SETTINGS['refreshrate'])) > 5 else 5
+PRESENCE_TYPE = int(os.getenv('PRESENCE_TYPE', SETTINGS.get('presence_type', 3)))
+PRESENCE_RATE = int(os.getenv('PRESENCE_RATE', SETTINGS.get('presence_rate', 5))) if int(os.getenv('PRESENCE_RATE', SETTINGS.get('presence_rate', 5))) > 1 else 1
+FIELD_STATUS = os.getenv("FIELD_STATUS", SETTINGS["fieldname"]["status"])
+FIELD_ADDRESS = os.getenv("FIELD_ADDRESS", SETTINGS["fieldname"]["address"])
+FIELD_PORT = os.getenv("FIELD_PORT", SETTINGS["fieldname"]["port"])
+FIELD_GAME = os.getenv("FIELD_GAME", SETTINGS["fieldname"]["game"])
+FIELD_CURRENTMAP = os.getenv("FIELD_CURRENTMAP", SETTINGS["fieldname"]["currentmap"])
+FIELD_PLAYERS = os.getenv("FIELD_PLAYERS", SETTINGS["fieldname"]["players"])
+FIELD_COUNTRY = os.getenv("FIELD_COUNTRY", SETTINGS["fieldname"]["country"])
 
-# clear cache
-print('Clearing cache...')
-for file in os.listdir('cache'):
-    if file.endswith(".txt") or file.endswith(".json"):
-        os.remove(os.path.join('cache', file))
+class DiscordGSM():
+    def __init__(self, bot):
+        print('\n----------------')
+        print('Github: \thttps://github.com/DiscordGSM/DiscordGSM')
+        print('Discord:\thttps://discord.gg/Cg4Au9T')
+        print('----------------\n')
 
-# get settings
-print('Setting up...')
-settings = Settings.get()
+        self.bot = bot
+        self.servers = Servers()
+        self.server_list = self.servers.get()
+        self.messages = []
+        self.message_error_count = self.current_display_server = 0
 
-# bot token
-TOKEN = os.getenv('DGSM_TOKEN', settings['token'])
+    def start(self):
+        self.print_to_console(f'Starting DiscordGSM v{VERSION}...')
+        self.query_servers.start()    
 
-#Role ID
-ROLE_ID = os.getenv('ROLE_ID', settings['role_id'])
+    def cancel(self):
+        self.query_servers.cancel()
+        self.print_servers.cancel()
+        self.presense_load.cancel()
 
-#IMAGE URL Checking
-RIMAGE_URL = os.getenv('IMAGE_URL', settings['image_url'])
+    async def on_ready(self):
+        # set username and avatar
+        with open('images/discordgsm.png', 'rb') as file:
+            try:
+                await bot.user.edit(username='DiscordGSM', avatar=file.read())
+            except:
+                pass
 
-# set up bot
-bot = commands.Bot(command_prefix=settings['prefix'])
+        # print info to console
+        print('\n----------------')
+        print(f'Logged in as:\t{bot.user.name}')
+        print(f'Robot ID:\t{bot.user.id}')
+        app_info = await bot.application_info()
+        print(f'Owner ID:\t{app_info.owner.id} ({app_info.owner.name})')
+        print('----------------\n')
 
-# query servers and save cache
-print('Pre-Query servers...')
-game_servers = Servers()
-game_servers.query()
+        self.print_presense_hint()
+        self.presense_load.start()
 
-# get servers
-servers = game_servers.load()
+        await self.set_channels_permissions()
+        self.print_to_console(f'Query server and send discord embed every {REFRESH_RATE} seconds...')
+        await self.refresh_discord_embed()
+        self.print_servers.start()
 
-# discord messages
-messages = []
+    # query the servers
+    @tasks.loop(seconds=REFRESH_RATE)
+    async def query_servers(self):
+        server_count = self.servers.query()
+        self.print_to_console(f'{server_count} servers queried')
 
-# boolean is currently refreshing
-is_refresh = False
-
-# bot ready action
-@bot.event
-async def on_ready():
-    # set username and avatar
-    with open('images/discordgsm.png', 'rb') as file:
-        try:
-            avatar = file.read()
-            await bot.user.edit(username='DiscordGSM', avatar=avatar)
-        except:
-            pass
-
-    # print info to console
-    print('----------------')
-    print(f'Logged in as: {bot.user.name}')
-    print(f'Robot ID: {bot.user.id}')
-    app_info = await bot.application_info()
-    print(f'Owner ID: {app_info.owner.id} ({app_info.owner.name})')
-    print('----------------')
-
-    # set bot presence
-    activity_text = len(servers) == 0 and f'Command: {settings["prefix"]}dgsm' or f'{len(servers)} game servers'
-    await bot.change_presence(status=discord.Status.online, activity=discord.Activity(name=activity_text, type=3))
-
-    # get channels store to array
-    channels = []
-    for server in servers:
-        channels.append(server['channel'])
-
-    # remove duplicated channels
-    channels = list(set(channels))
-
-    for channel in channels:
-        # set channel permission
-        try:
-            await bot.get_channel(channel).set_permissions(bot.user, read_messages=True, send_messages=True, reason='Display servers embed')
-            print(f'Set channel: {channel} with permissions: read_messages, send_messages')
-        except:
-            print(f'Missing permission: Manage Roles, Manage Channels')
-
-        # remove old messages in channels
-        await bot.get_channel(channel).purge(check=lambda m: m.author==bot.user)
-
-    # send embed
-    for server in servers:
-        message = await bot.get_channel(server['channel']).send(embed=get_embed(server))
-        messages.append(message)
-
-    # print delay time
-    delay = int(settings['refreshrate']) if int(settings['refreshrate']) > MIN_REFRESH_RATE else MIN_REFRESH_RATE
-    print(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + f' Query servers every {delay} seconds')
-
-    # start print servers
-    t = Thread(target=await print_servers())
-    t.start()
-
-# print servers to discord
-@asyncio.coroutine
-async def print_servers():
-    edit_error_count = 0
-    next_update_time = 0
-
-    while True:
-        # don't continue when servers is refreshing
-        if is_refresh:
-            await asyncio.sleep(1)
-            continue
-
-        # edit error with some reasons (maybe messages edit limit?), anyway servers refresh will fix this issue
-        if edit_error_count >= 10:
-            edit_error_count = 0
-
-            # refresh discord servers list
-            await refresh_servers_list()
-            continue
-
-        if int(datetime.utcnow().timestamp()) >= next_update_time:
-            # delay server query
-            delay = int(settings['refreshrate']) if int(settings['refreshrate']) > MIN_REFRESH_RATE else MIN_REFRESH_RATE
-            next_update_time = int(datetime.utcnow().timestamp()) + delay
-
-            # query servers and save cache
-            game_servers.query()
-
-            # edit embed
-            for i, server in zip(range(len(servers)), servers):
-                # load server cache. If the data is the same, don't update the discord message
-                server_cache = ServerCache(server['addr'], server['port'])
-                if not server_cache.has_changed(): continue
-
+    # pre-query servers before ready
+    @query_servers.before_loop
+    async def before_query_servers(self):
+        self.print_to_console('Pre-Query servers...')
+        server_count = self.servers.query()
+        self.print_to_console(f'{server_count} servers queried')
+        await self.bot.wait_until_ready()
+        await self.on_ready()
+    
+    # send messages to discord
+    @tasks.loop(seconds=REFRESH_RATE)
+    async def print_servers(self):
+        if self.message_error_count < 20:
+            updated_count = 0
+            for i in range(len(self.server_list)):
                 try:
-                    await messages[i].edit(embed=get_embed(server))
+                    await self.messages[i].edit(content=('frontMessage' in self.server_list[i] and self.server_list[i]['frontMessage'].strip()) and self.server_list[i]['frontMessage'] or None, embed=self.get_embed(self.server_list[i]))
+                    updated_count += 1
                 except:
-                    edit_error_count += 1
-                    print(f'Error: message: {messages[i]} fail to edit, message deleted or no permission. Server: {server["addr"]}:{server["port"]}')
+                    self.message_error_count += 1
+                    self.print_to_console(f'ERROR: message {i} fail to edit, message deleted or no permission. Server: {self.server_list[i]["addr"]}:{self.server_list[i]["port"]}')
 
-        await asyncio.sleep(1)
+            self.print_to_console(f'{updated_count} messages updated')
+        else:
+            self.message_error_count = 0
+            self.print_to_console(f'Message ERROR reached, refreshing...')
+            await self.refresh_discord_embed()
+    
+    # refresh discord presense
+    @tasks.loop(minutes=PRESENCE_RATE)
+    async def presense_load(self):
+        # 1 = display number of servers, 2 = display total players/total maxplayers, 3 = display each server one by one every 10 minutes
+        if len(self.server_list) == 0:
+            activity_text = f'Command: {DGSM_PREFIX}dgsm'
+        if PRESENCE_TYPE <= 1:
+            activity_text = f'{len(self.server_list)} game servers'
+        elif PRESENCE_TYPE == 2:
+            total_activeplayers = total_maxplayers = 0
+            for server in self.server_list:
+                server_cache = ServerCache(server['addr'], server['port'])
+                data = server_cache.get_data()
+                if data and server_cache.get_status() == 'Online':
+                    total_activeplayers += int(data['players'])
+                    total_maxplayers += int(data['maxplayers'])
+                  
+            activity_text = f'{total_activeplayers}/{total_maxplayers} active players' if total_maxplayers > 0 else '0 players' 
+        elif PRESENCE_TYPE >= 3:
+            if self.current_display_server >= len(self.server_list):
+                self.current_display_server = 0
 
-# get game server embed
-def get_embed(server):
-    # load server cache
-    server_cache = ServerCache(server['addr'], server['port'])
+            server_cache = ServerCache(self.server_list[self.current_display_server]['addr'], self.server_list[self.current_display_server]['port'])
+            data = server_cache.get_data()
+            if data and server_cache.get_status() == 'Online':
+                activity_text = f'{data["players"]}/{data["maxplayers"]} on {data["name"]}' if int(data["maxplayers"]) > 0 else '0 players'
 
-    # load server data
-    data = server_cache.get_data()
+            self.current_display_server += 1
 
-    if data:
-        # load server status Online/Offline
-        status = server_cache.get_status()
+        if activity_text:
+            await bot.change_presence(status=discord.Status.online, activity=discord.Activity(name=activity_text, type=3))
+            self.print_to_console(f'Discord presence updated | {activity_text}')
 
-        if status == 'Online':
-            emoji = ':green_circle:'
-            if data['maxplayers'] <= data['players']:
-                color = discord.Color.from_rgb(240, 71, 71) # red
-            elif data['maxplayers'] <= data['players'] * 2:
-                color = discord.Color.from_rgb(250, 166, 26) # yellew
+    # set channels permissions before sending new messages
+    async def set_channels_permissions(self):
+        channels = [server['channel'] for server in self.server_list]
+        channels = list(set(channels))  # remove duplicated channels
+        for channel in channels:
+            try:
+                await bot.get_channel(channel).set_permissions(bot.user, read_messages=True, send_messages=True, reason='Display servers embed')
+                self.print_to_console(f'Channel: {channel} | Permissions: read_messages, send_messages | Permissions set successfully')
+            except:
+                self.print_to_console(f'Channel: {channel} | Permissions: read_messages, send_messages | ERROR: Permissions fail to set')
+
+    # remove old discord embed and send new discord embed
+    async def refresh_discord_embed(self):
+        # refresh servers.json cache
+        self.servers = Servers()
+        self.server_list = self.servers.get()
+
+        # remove old discord embed
+        channels = [server['channel'] for server in self.server_list]
+        channels = list(set(channels)) # remove duplicated channels
+        for channel in channels:
+            await bot.get_channel(channel).purge(check=lambda m: m.author==bot.user)
+        
+        # send new discord embed
+        self.messages = [await bot.get_channel(s['channel']).send(content=('frontMessage' in s and s['frontMessage'].strip()) and s['frontMessage'] or None, embed=self.get_embed(s)) for s in self.server_list]
+    
+    def print_to_console(self, value):
+        print(datetime.now().strftime('%Y-%m-%d %H:%M:%S: ') + value)
+
+    # 1 = display number of servers, 2 = display total players/total maxplayers, 3 = display each server one by one every 10 minutes
+    def print_presense_hint(self):
+        if PRESENCE_TYPE <= 1:
+            hints = 'number of servers'
+        elif PRESENCE_TYPE == 2:
+            hints = 'total players/total maxplayers'
+        elif PRESENCE_TYPE >= 3:
+            hints = f'each server one by one every {PRESENCE_RATE} minutes'
+        self.print_to_console(f'Presence update type: {PRESENCE_TYPE} | Display {hints}')
+
+    # get game server discord embed
+    def get_embed(self, server):
+        # load server cache
+        server_cache = ServerCache(server['addr'], server['port'])
+
+        # load server data
+        data = server_cache.get_data()
+
+        if data:
+            # load server status Online/Offline
+            status = server_cache.get_status()
+
+            emoji = (status == 'Online') and ':green_circle:' or ':red_circle:'
+
+            if status == 'Online':
+                if int(data['maxplayers']) <= int(data['players']):
+                    color = discord.Color.from_rgb(240, 71, 71) # red
+                elif int(data['maxplayers']) <= int(data['players']) * 2:
+                    color = discord.Color.from_rgb(250, 166, 26) # yellew
+                else:
+                    color = discord.Color.from_rgb(67, 181, 129) # green
             else:
-                color = discord.Color.from_rgb(67, 181, 129) # green
+                color = discord.Color.from_rgb(32, 34, 37) # dark
+
+            title = (data['password'] and ':lock: ' or '') + f'`{data["name"]}`'
+            custom = ('custom' in server) and server['custom'] or None
+            if custom and custom.strip():
+                embed = discord.Embed(title=title, description=custom, color=color)
+            elif server['type'] == 'SourceQuery' and not custom:
+                embed = discord.Embed(title=title, description=f'Connect: steam://connect/{data["addr"]}:{server["port"]}', color=color)
+            else:
+                embed = discord.Embed(title=title, color=color)
+
+            embed.add_field(name=FIELD_STATUS, value=f'{emoji} **{status}**', inline=True)
+            embed.add_field(name=f'{FIELD_ADDRESS}:{FIELD_PORT}', value=f'`{data["addr"]}:{data["port"]}`', inline=True)
+ 
+            flag_emoji = ('country' in server) and (':flag_' + server['country'].lower() + f': {server["country"]}') or ':united_nations: Unknown'
+            embed.add_field(name=FIELD_COUNTRY, value=flag_emoji, inline=True)
+
+            embed.add_field(name=FIELD_GAME, value=data['game'], inline=True)
+            embed.add_field(name=FIELD_CURRENTMAP, value=data['map'], inline=True)
+
+            if status == 'Online':
+                value = str(data['players']) # example: 20/32
+                if int(data['bots']) > 0: value += f' ({data["bots"]})' # example: 20 (2)/32
+            else:
+                value = '0' # example: 0/32
+
+            embed.add_field(name=FIELD_PLAYERS, value=f'{value}/{data["maxplayers"]}', inline=True)
+
+            if 'image_url' in server:
+                image_url = str(server['image_url'])
+            else:
+                image_url = (CUSTOM_IMAGE_URL and CUSTOM_IMAGE_URL.strip()) and CUSTOM_IMAGE_URL or f'https://github.com/DiscordGSM/Map-Thumbnails/raw/master/{urllib.parse.quote(data["game"])}'
+                image_url += f'/{urllib.parse.quote(data["map"])}.jpg'
+
+            embed.set_thumbnail(url=image_url)
         else:
-            emoji = ':red_circle:'
-            color = discord.Color.from_rgb(32, 34, 37) # dark
+            # server fail to query
+            color = discord.Color.from_rgb(240, 71, 71) # red
+            embed = discord.Embed(title='ERROR', description=f'{FIELD_STATUS}: :warning: **Fail to query**', color=color)
+            embed.add_field(name=f'{FIELD_ADDRESS}:{FIELD_PORT}', value=f'{server["addr"]}:{server["port"]}', inline=True)
+        
+        embed.set_footer(text=f'DiscordGSM v{VERSION} | Game Server Monitor | Last update: ' + datetime.now().strftime('%a, %Y-%m-%d %I:%M:%S%p'), icon_url='https://github.com/DiscordGSM/DiscordGSM/raw/master/images/discordgsm.png')
+        
+        return embed
 
-        title = (data['password'] and ':lock: ' or '') + data["name"]
-        description = ('custom' in server) and server['custom'] or ''
-        if server['type'] == 'SourceQuery':
-            embed = discord.Embed(title=title, description=f'Connect: steam://connect/{data["addr"]}:{server["port"]}\n' + description, color=color)
-        elif description.strip():
-            embed = discord.Embed(title=title, description=description, color=color)
-        else:
-            embed = discord.Embed(title=title, color=color)
+    def get_server_list(self):
+        return self.server_list
 
-        embed.add_field(name=f'{settings["fieldname"]["status"]}', value=f'{emoji} **{status}**', inline=True)
-        embed.add_field(name=f'{settings["fieldname"]["address"]}:{settings["fieldname"]["port"]}', value=f'`{data["addr"]}:{data["port"]}`', inline=True)
+bot = commands.Bot(command_prefix=DGSM_PREFIX)
 
-        flag_emoji = ('country' in server) and (':flag_' + server['country'].lower() + f': {server["country"]}') or ':united_nations: Unknown'
-        embed.add_field(name=f'{settings["fieldname"]["country"]}', value=flag_emoji, inline=True)
-
-        embed.add_field(name=f'{settings["fieldname"]["game"]}', value=f'{data["game"]}', inline=True)
-        embed.add_field(name=f'{settings["fieldname"]["currentmap"]}', value=f'{data["map"]}', inline=True)
-
-        if status == 'Online':
-            value = f'{data["players"]}' # example: 20/32
-            if data['bots'] > 0: value += f' ({data["bots"]})' # example: 20 (2)/32
-        else:
-            value = '0' # example: 0/32
-                
-        embed.add_field(name=f'{settings["fieldname"]["players"]}', value=f'{value}/{data["maxplayers"]}', inline=True)
-
-        if 'image_url' in server:
-            image_url = str(server['image_url'])
-        elif RIMAGE_URL != "":
-            temp_image_url = os.getenv('IMAGE_URL', settings['image_url'])
-            image_url = f'{temp_image_url}/{urllib.parse.quote(data["map"])}.jpg'
-        else:
-            image_url = f'https://github.com/DiscordGSM/Map-Thumbnails/raw/master/{urllib.parse.quote(data["game"])}/{urllib.parse.quote(data["map"])}.jpg'
-
-        embed.set_thumbnail(url=image_url)
-    else:
-        # server fail to query
-        color = discord.Color.from_rgb(240, 71, 71) # red
-        embed = discord.Embed(title='ERROR', description=f'{settings["fieldname"]["status"]}: :warning: **Fail to query**', color=color)
-        embed.add_field(name=f'{settings["fieldname"]["port"]}', value=f'{server["addr"]}:{server["port"]}', inline=True)
-    
-    embed.set_footer(text=f'DiscordGSM v{VERSION} | Monitor game server | Last update: ' + datetime.now().strftime('%a, %Y-%m-%d %I:%M:%S%p'), icon_url='https://github.com/BattlefieldDuck/DiscordGSM/raw/master/images/discordgsm.png')
-    
-    return embed
-
-# command: servers
-# list all the servers in configs/servers.json
-@bot.command(name='dgsm', aliases=['discordgsm'])
+# command: dgsm
+# display dgsm informations
+@bot.command(name='dgsm', aliases=['discordgsm'], brief='Display DiscordGSM\'s informations')
 @commands.check_any(commands.has_role(ROLE_ID), commands.is_owner())
 async def _dgsm(ctx):
-    title = f'Command: {settings["prefix"]}dgsm'
-    description = f'Thanks for using Discord Game Server Monitor ([DiscordGSM](https://github.com/BattlefieldDuck/DiscordGSM))\n'
-    description += f'\nUseful commands:\n{settings["prefix"]}servers - Display the server list'
-    description += f'\n{settings["prefix"]}serveradd - Add a server'
-    description += f'\n{settings["prefix"]}serverdel - Delete a server'
-    description += f'\n{settings["prefix"]}serversrefresh - Refresh the server list'
-    description += f'\n{settings["prefix"]}getserversjson - get servers.json file'
-    description += f'\n{settings["prefix"]}setserversjson - set servers.json file'
+    title = f'Command: {DGSM_PREFIX}dgsm'
+    description = f'Thanks for using Discord Game Server Monitor ([DiscordGSM](https://github.com/DiscordGSM/DiscordGSM))\n'
+    description += f'\nUseful commands:\n{DGSM_PREFIX}servers - Display the server list'
+    description += f'\n{DGSM_PREFIX}serversrefresh - Refresh the server list'
+    description += f'\n{DGSM_PREFIX}getserversjson - get servers.json file'
+    description += f'\n{DGSM_PREFIX}setserversjson - set servers.json file'
     color = discord.Color.from_rgb(114, 137, 218) # discord theme color
     embed = discord.Embed(title=title, description=description, color=color)
     embed.add_field(name='Support server', value='https://discord.gg/Cg4Au9T', inline=True)
-    embed.add_field(name='Github', value='https://github.com/BattlefieldDuck/DiscordGSM', inline=True)
+    embed.add_field(name='Github', value='https://github.com/DiscordGSM/DiscordGSM', inline=True)
     await ctx.send(embed=embed)
 
-# command: servers
-# list all the servers in configs/servers.json
-@bot.command(name='serversrefresh')
+# command: serversrefresh
+# refresh the server list
+@bot.command(name='serversrefresh', brief='Refresh the server list')
 @commands.check_any(commands.has_role(ROLE_ID), commands.is_owner())
 async def _serversrefresh(ctx):
     # refresh discord servers list
-    await refresh_servers_list()
+    await discordgsm.refresh_discord_embed()
+    discordgsm.print_to_console('Server list refreshed')
 
     # send response
-    title = f'Command: {settings["prefix"]}serversrefresh'
+    title = f'Command: {DGSM_PREFIX}serversrefresh'
     color = discord.Color.from_rgb(114, 137, 218) # discord theme color
     embed = discord.Embed(title=title, description=f'Servers list refreshed', color=color)
     await ctx.send(embed=embed)
 
-async def refresh_servers_list():
-    # currently refreshing
-    global is_refresh
-    if is_refresh: return
-    is_refresh = True
-
-    # set bot presence
-    activity_text = '... Refreshing...'
-    await bot.change_presence(status=discord.Status.idle, activity=discord.Activity(name=activity_text, type=3))
-
-    # remove old messages
-    global messages
-    for message in messages:
-        try:
-            await message.delete()
-        except:
-            pass
-
-    # reset messages
-    messages = []
-
-    # refresh server list
-    game_servers.refresh()
-
-    # reload servers
-    global servers
-    servers = game_servers.load()
-
-    # get channels store to array
-    channels = []
-    for server in servers:
-        channels.append(server['channel'])
-
-    # remove duplicated channels
-    channels = list(set(channels))
-
-    # set channel permission and purge messages
-    tasks = [set_channel_permission_and_purge_messages(channel) for channel in channels]
-    await asyncio.wait(tasks, return_when=asyncio.ALL_COMPLETED, timeout=None)
-
-    # send embed
-    for server in servers:
-        message = await bot.get_channel(server['channel']).send(embed=get_embed(server))
-        messages.append(message)
-
-    activity_text = len(servers) == 0 and 'Command: !dgsm' or f'{len(servers)} game servers'
-    await bot.change_presence(status=discord.Status.online, activity=discord.Activity(name=activity_text, type=3))
-
-    # refresh finish
-    is_refresh = False
-
-    # log
-    print(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ' Refreshed servers')
-
-async def set_channel_permission_and_purge_messages(channel):
-    # set channel permission
-    try:
-        await bot.get_channel(channel).set_permissions(bot.user, read_messages=True, send_messages=True, reason='Display servers embed')
-        print(f'Set channel: {channel} with permissions: read_messages, send_messages')
-    except:
-        print(f'Missing permission: Manage Roles, Manage Channels')
-
-    # remove old messages in channels
-    await bot.get_channel(channel).purge(check=lambda m: m.author==bot.user)
-
 # command: servers
 # list all the servers in configs/servers.json
-@bot.command(name='servers')
+@bot.command(name='servers', brief='List all the servers in servers.json')
 @commands.check_any(commands.has_role(ROLE_ID), commands.is_owner())
 async def _servers(ctx):
-    title = f'Command: {settings["prefix"]}servers'
+    title = f'Command: {DGSM_PREFIX}servers'
     color = discord.Color.from_rgb(114, 137, 218) # discord theme color
     embed = discord.Embed(title=title, color=color)
     type, addr_port, channel = '', '', ''
-
-    servers = game_servers.load()
+    servers = discordgsm.get_server_list()
 
     for i in range(len(servers)):
         type += f'`{i+1}`. {servers[i]["type"]}\n'
@@ -364,72 +319,19 @@ async def _servers(ctx):
     embed.add_field(name='Channel ID', value=channel, inline=True)
     await ctx.send(embed=embed)
 
-# command: serveradd
-# add a server to configs/servers.json
-@bot.command(name='serveradd')
-@commands.check_any(commands.has_role(ROLE_ID), commands.is_owner())
-async def _serveradd(ctx, *args):
-    title = f'Command: {settings["prefix"]}serveradd'
-    color = discord.Color.from_rgb(114, 137, 218) # discord theme color
-
-    if len(args) == 5:
-        type, game, addr, port, channel = args
-
-        if port.isdigit() and channel.isdigit():
-            game_servers.add(type, game, addr, port, channel)
-
-            # refresh discord servers list
-            await refresh_servers_list()
-
-            description=f'Server added successfully'
-            embed = discord.Embed(title=title, description=description, color=color)
-            embed.add_field(name='Type:Game', value=f'{type}:{game}', inline=True)
-            embed.add_field(name='Address:Port', value=f'{addr}:{port}', inline=True)
-            embed.add_field(name='Channel ID', value=channel, inline=True)
-            await ctx.send(embed=embed)
-            return
-
-    description=f'Usage: {settings["prefix"]}serveradd <type> <game> <addr> <port> <channel>\nRemark: <port> and <channel> should be digit only'
-    embed = discord.Embed(title=title, description=description, color=color)
-    await ctx.send(embed=embed)
-
-# command: serverdel
-# delete a server by id from configs/servers.json
-@bot.command(name='serverdel')
-@commands.check_any(commands.has_role(ROLE_ID), commands.is_owner())
-async def _serverdel(ctx, *args):
-    title = f'Command: {settings["prefix"]}serverdel'
-    color = discord.Color.from_rgb(114, 137, 218) # discord theme color
-
-    if len(args) == 1:
-        server_id = args[0]
-        if server_id.isdigit():
-            if game_servers.delete(server_id):
-                # refresh discord servers list
-                await refresh_servers_list()
-
-                description=f'Server deleted successfully. ID: {server_id}'
-                embed = discord.Embed(title=title, description=description, color=color)
-                await ctx.send(embed=embed)
-                return
-
-    description=f'Usage: {settings["prefix"]}serverdel <id>\nRemark: view id with command {settings["prefix"]}servers'
-    embed = discord.Embed(title=title, description=description, color=color)
-    await ctx.send(embed=embed)
-
 # command: getserversjson
 # get configs/servers.json
-@bot.command(name='getserversjson')
+@bot.command(name='getserversjson', brief='Get servers.json file')
 @commands.check_any(commands.has_role(ROLE_ID), commands.is_owner())
-async def _getsfile(ctx):
+async def _getserversjson(ctx):
     await ctx.send(file=discord.File('configs/servers.json'))
 
 # command: setserversjson
 # set configs/servers.json
-@bot.command(name='setserversjson')
+@bot.command(name='setserversjson', brief='Set servers.json file')
 @commands.check_any(commands.has_role(ROLE_ID), commands.is_owner())
-async def _serverdel(ctx, *args):
-    title = f'Command: {settings["prefix"]}setserversjson'
+async def _setserversjson(ctx, *args):
+    title = f'Command: {DGSM_PREFIX}setserversjson'
     color = discord.Color.from_rgb(114, 137, 218) # discord theme color
 
     if len(args) == 1:
@@ -438,24 +340,23 @@ async def _serverdel(ctx, *args):
         with open('configs/servers.json', 'wb') as file:
             file.write(r.content)
 
-        description=f'File servers.json uploaded'
+        description = f'File servers.json uploaded'
         embed = discord.Embed(title=title, description=description, color=color)
         await ctx.send(embed=embed)
         return
 
-    description=f'Usage: {settings["prefix"]}setserversjson <url>\nRemark: <url> is the servers.json download url'
+    description = f'Usage: {DGSM_PREFIX}setserversjson <url>\nRemark: <url> is the servers.json download url'
     embed = discord.Embed(title=title, description=description, color=color)
     await ctx.send(embed=embed)
 
-#Error Handling Missing Role
+# error handling on Missing Role
 @bot.event
-async def on_command_error (ctx,error):
+async def on_command_error(ctx, error):
     if isinstance(error, commands.CheckAnyFailure):
-        message=await ctx.send('''You dont have access to this commands!''')
+        message = await ctx.send('''You dont have access to this commands!''')
         await asyncio.sleep(10)
         await message.delete()
 
-
-# run the bot
-print('Starting bot...')
-bot.run(TOKEN)
+discordgsm = DiscordGSM(bot)
+discordgsm.start()
+bot.run(DGSM_TOKEN)
