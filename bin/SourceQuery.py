@@ -29,11 +29,17 @@ class SourceQuery(object):
 		except:
 			return False
 
-		data = data[4:]
+		header, data = self.getByte(data[4:])
+
+		# (12/8/2021) Changes to server browser packets in latest Steam client
+        # https://steamcommunity.com/discussions/forum/14/2974028351344359625/
+		if chr(header) == 'A':
+			self.sock.send(A2S_INFO + data)
+			data = self.sock.recv(4096)
+			header, data = self.getByte(data[4:])
 
 		result = {}
 
-		header, data = self.getByte(data)
 		if chr(header) == S2A_INFO_SOURCE:
 			result['_engine_'] = 'Source'
 
@@ -79,6 +85,15 @@ class SourceQuery(object):
 					result['SpecName'], data = self.getString(data)
 				if edf & 0x10:
 					result['Tags'], data = self.getString(data)
+
+					# mordhau fix
+					if result['GameDesc'] == 'Mordhau':
+						result['AppID'], data = self.getLongLong(data)
+						tags = str(result['Tags']).split(',')
+						for tag in tags:
+							if tag[:2] == 'B:':
+								result['Players'] = tag[2:]
+								break
 			except:
 				pass
 		elif chr(header) == S2A_INFO_GOLDSRC:
@@ -149,4 +164,9 @@ class SourceQuery(object):
 
 	def getString(self, data):
 		s = data[0:].split(b'\x00')[0]
-		return str(s, encoding='utf-8'), data[len(s) + 1:]
+		return str(s, encoding='utf-8', errors='ignore'), data[len(s) + 1:]
+
+# Debug
+if __name__ == '__main__':
+    sourceQuery = SourceQuery('168.119.39.60', 27013)
+    print(sourceQuery.getInfo())

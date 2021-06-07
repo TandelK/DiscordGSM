@@ -1,7 +1,9 @@
 import os
+import time
 import urllib
 import asyncio
 import requests
+import subprocess
 from datetime import datetime
 
 # discord
@@ -13,19 +15,28 @@ from bin import *
 from servers import Servers, ServerCache
 from settings import Settings
 
-# download servers.json every heroku dyno start
-servers_json_url = os.getenv('SERVERS_JSON_URL')
-if servers_json_url and servers_json_url.strip():
-    print('Downloading servers.json...')
-    try:
-        r = requests.get(servers_json_url)
-        with open('configs/servers.json', 'wb') as file:
-            file.write(r.content)
-    except:
-        print('Fail to download servers.json on start up')
+# [HEROKU] get and load servers json from SERVERS_JSON env directly
+servers_json = os.getenv('SERVERS_JSON')
+if servers_json and servers_json.strip():
+    with open('configs/servers.json', 'w') as file:
+        file.write(servers_json)
+
+# [HEROKU] Check bot token and servers.json valid before start
+if 'DGSM_TOKEN' in os.environ:
+    invite_link = subprocess.run(['python3', 'getbotinvitelink.py'], stdout=subprocess.PIPE, shell=False).stdout.decode('utf8')
+    if 'https://discord.com/api/oauth2/authorize?client_id=' not in invite_link:
+        while True:
+            time.sleep(1)
+    with open('configs/servers.json', 'r') as file:
+        try:
+            Servers().get()
+        except Exception as e:
+            print(e)
+            while True:
+                time.sleep(1)
 
 # env values
-VERSION = '1.7.4'
+VERSION = '1.8.3'
 SETTINGS = Settings.get()
 DGSM_TOKEN = os.getenv('DGSM_TOKEN', SETTINGS['token'])
 DGSM_PREFIX = os.getenv("DGSM_PREFIX", SETTINGS.get('prefix', '!'))
@@ -66,7 +77,8 @@ class DiscordGSM():
 
     async def on_ready(self):
         # set username and avatar
-        with open('images/discordgsm.png', 'rb') as file:
+        icon_file_name = 'images/discordgsm' + ('DGSM_TOKEN' in os.environ and '-heroku' or '') + '.png'
+        with open(icon_file_name, 'rb') as file:
             try:
                 await bot.user.edit(username='DiscordGSM', avatar=file.read())
             except:
@@ -148,10 +160,12 @@ class DiscordGSM():
             data = server_cache.get_data()
             if data and server_cache.get_status() == 'Online':
                 activity_text = f'{data["players"]}/{data["maxplayers"]} on {data["name"]}' if int(data["maxplayers"]) > 0 else '0 players'
+            else:
+                activity_text = None
 
             self.current_display_server += 1
 
-        if activity_text:
+        if activity_text != None:
             await bot.change_presence(status=discord.Status.online, activity=discord.Activity(name=activity_text, type=3))
             self.print_to_console(f'Discord presence updated | {activity_text}')
 
@@ -215,6 +229,13 @@ class DiscordGSM():
                     color = discord.Color.from_rgb(250, 166, 26) # yellew
                 else:
                     color = discord.Color.from_rgb(67, 181, 129) # green
+                    try:
+                        if 'color' in server:
+                            h = server['color'].lstrip('#')
+                            rgb = tuple(int(h[i:i+2], 16) for i in (0, 2, 4))
+                            color = discord.Color.from_rgb(rgb[0], rgb[1], rgb[2])
+                    except Exception as e:
+                        self.print_to_console(e)
             else:
                 color = discord.Color.from_rgb(32, 34, 37) # dark
 
@@ -257,7 +278,7 @@ class DiscordGSM():
             embed = discord.Embed(title='ERROR', description=f'{FIELD_STATUS}: :warning: **Fail to query**', color=color)
             embed.add_field(name=f'{FIELD_ADDRESS}:{FIELD_PORT}', value=f'{server["addr"]}:{server["port"]}', inline=True)
         
-        embed.set_footer(text=f'DiscordGSM v{VERSION} | Game Server Monitor | Last update: ' + datetime.now().strftime('%a, %Y-%m-%d %I:%M:%S%p'), icon_url='https://github.com/DiscordGSM/DiscordGSM/raw/master/images/discordgsm.png')
+        embed.set_footer(text=f'DiscordGSM v{VERSION} | 📺Game Server Monitor | Last update: ' + datetime.now().strftime('%a, %Y-%m-%d %I:%M:%S%p'), icon_url='https://github.com/DiscordGSM/DiscordGSM/raw/master/images/discordgsm.png')
         
         return embed
 
@@ -353,10 +374,9 @@ async def _setserversjson(ctx, *args):
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.CheckAnyFailure):
-        message = await ctx.send('''You dont have access to this commands!''')
-        await asyncio.sleep(10)
-        await message.delete()
+        await ctx.send("You don't have access to this command!", delete_after=10.0)
 
 discordgsm = DiscordGSM(bot)
 discordgsm.start()
+
 bot.run(DGSM_TOKEN)
